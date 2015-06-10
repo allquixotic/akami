@@ -95,8 +95,17 @@ module Akami
 
       if signature? and signature.have_document?
         xml.merge!(wsse_signature)
+        if username_token?
+          xml["wsse:Security"].merge!(wsse_username_token["wsse:Security"])
+          unless xml['wsse:Security'][:order!].nil?
+            xml['wsse:Security'][:order!] << 'wsse:UsernameToken'
+          end
+        end
       elsif username_token?
-        xml.merge!(wsse_username_token)
+        xml.merge!(wsse_signature)
+        unless xml['wsse:Security'][:order!].nil?
+            xml['wsse:Security'][:order!] << 'wsse:UsernameToken'
+        end
       end
 
       if timestamp?
@@ -121,18 +130,21 @@ module Akami
       if digest?
         token = security_hash :wsse, "UsernameToken",
           "wsse:Username" => username,
+          "wsse:Password" => digest_password,
           "wsse:Nonce" => Base64.encode64(nonce).chomp,
           "wsu:Created" => timestamp,
-          "wsse:Password" => digest_password,
           :attributes! => { "wsse:Password" => { "Type" => PASSWORD_DIGEST_URI },  "wsse:Nonce" => { "EncodingType" => BASE64_URI } }
-        # clear the nonce after each use
-        @nonce = nil
       else
         token = security_hash :wsse, "UsernameToken",
           "wsse:Username" => username,
           "wsse:Password" => password,
-          :attributes! => { "wsse:Password" => { "Type" => PASSWORD_TEXT_URI } }
+          "wsse:Nonce" => Base64.encode64(nonce).chomp,
+          "wsu:Created" => timestamp,
+          :attributes! => { "wsse:Password" => { "Type" => PASSWORD_TEXT_URI } , "wsse:Nonce" => { "EncodingType" => BASE64_URI } }
       end
+      #token["wsse:Security"][:attributes!] = { "wsse:UsernameToken" => { "wsu:Id" => "UsernameToken-#{count}"} }
+      # clear the nonce after each use
+      @nonce = nil
       token
     end
 
@@ -142,7 +154,9 @@ module Akami
       # First key/value is tag/hash
       tag, hash = signature_hash.shift
 
-      security_hash nil, tag, hash, signature_hash
+      vvv = security_hash nil, tag, hash, signature_hash
+      vvv["wsse:Security"][:attributes!]["wsse:UsernameToken"] = { "wsu:Id" => "UsernameToken-#{count}"}
+      vvv
     end
 
     # Returns a Hash containing wsu:Timestamp details.

@@ -9,7 +9,7 @@ module Akami
       class MissingCertificate < RuntimeError; end
 
       # For a +Savon::WSSE::Certs+ object. To hold the certs we need to sign.
-      attr_accessor :certs
+      attr_accessor :certs, :inclusive_namespaces, :xform_inclusive_namespaces
 
       # Without a document, the document cannot be signed.
       # Generate the document once, and then set document and recall #to_token
@@ -26,7 +26,8 @@ module Akami
       RSASHA1SignatureAlgorithm = 'http://www.w3.org/2000/09/xmldsig#rsa-sha1'.freeze
       SHA1DigestAlgorithm = 'http://www.w3.org/2000/09/xmldsig#sha1'.freeze
 
-      X509v3ValueType = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3'.freeze
+      #X509v3ValueType = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509v3'.freeze
+      X509v3ValueType = "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509PKIPathv1".freeze
       Base64EncodingType = 'http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary'.freeze
 
       SignatureNamespace = 'http://www.w3.org/2000/09/xmldsig#'.freeze
@@ -46,17 +47,18 @@ module Akami
       end
 
       def body_id
-        @body_id ||= "Body-#{uid}".freeze
+        #@body_id ||= "Body-#{uid}".freeze
+        "id-25"
       end
 
       def security_token_id
-        @security_token_id ||= "SecurityToken-#{uid}".freeze
+        @security_token_id ||= "X509-#{uid}".freeze
       end
 
       def body_attributes
         {
-          "xmlns:wsu" => Akami::WSSE::WSU_NAMESPACE,
           "wsu:Id" => body_id,
+          "xmlns:wsu" => Akami::WSSE::WSU_NAMESPACE,
         }
       end
 
@@ -65,19 +67,19 @@ module Akami
 
         sig = signed_info.merge(key_info).merge(signature_value)
         sig.merge! :order! => []
-        [ "SignedInfo", "SignatureValue", "KeyInfo" ].each do |key|
+        [ "ds:SignedInfo", "ds:SignatureValue", "ds:KeyInfo" ].each do |key|
           sig[:order!] << key if sig[key]
         end
 
         token = {
-          "Signature" => sig,
-          :attributes! => { "Signature" => { "xmlns" => SignatureNamespace } },
+          "ds:Signature" => sig,
+          :attributes! => { "ds:Signature" => { "wsu:Id" => "SIG-#{uid}","xmlns:ds" => SignatureNamespace } },
         }
 
         token.deep_merge!(binary_security_token) if certs.cert
 
         token.merge! :order! => []
-        [ "wsse:BinarySecurityToken", "Signature" ].each do |key|
+        [ "wsse:BinarySecurityToken", "ds:Signature" ].each do |key|
           token[:order!] << key if token[key]
         end
 
@@ -87,8 +89,10 @@ module Akami
       private
 
       def binary_security_token
+          hackk = 'sanitized' #This is to ensure the certificate equals exactly the one from SOAP, but I've tried it with cert.to_der also
         {
-          "wsse:BinarySecurityToken" => Base64.encode64(certs.cert.to_der).gsub("\n", ''),
+          #"wsse:BinarySecurityToken" => Base64.encode64(certs.cert.to_der).gsub("\n", ''),
+          "wsse:BinarySecurityToken" => hackk,
           :attributes! => { "wsse:BinarySecurityToken" => {
             "wsu:Id" => security_token_id,
             'EncodingType' => Base64EncodingType,
@@ -100,7 +104,7 @@ module Akami
 
       def key_info
         {
-          "KeyInfo" => {
+          "ds:KeyInfo" => {
             "wsse:SecurityTokenReference" => {
               "wsse:Reference/" => nil,
               :attributes! => { "wsse:Reference/" => {
@@ -108,32 +112,47 @@ module Akami
                 "URI" => "##{security_token_id}",
               } }
             },
-            :attributes! => { "wsse:SecurityTokenReference" => { "xmlns:wsu" => "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd" } },
+            :attributes! => { "wsse:SecurityTokenReference" => 
+            { 
+              "xmlns:wsu" => "http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd",
+              "wsse11:TokenType"=>"http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-x509-token-profile-1.0#X509PKIPathv1",
+              "xmlns:wsse11"=>"http://docs.oasis-open.org/wss/oasis-wss-wssecurity-secext-1.1.xsd"
+            } },
+          },
+          :attributes! => {
+            "ds:KeyInfo" => {
+              "wsu:Id" => "KI-#{uid}".freeze,
+            }
           },
         }
       end
 
       def signature_value
-        { "SignatureValue" => the_signature }
+        { "ds:SignatureValue" => the_signature }
       rescue MissingCertificate
         {}
       end
 
       def signed_info
         {
-          "SignedInfo" => {
-            "CanonicalizationMethod/" => nil,
-            "SignatureMethod/" => nil,
-            "Reference" => [
+          "ds:SignedInfo" => {
+            "ds:CanonicalizationMethod" => 
+              { "ec:InclusiveNamespaces/" => nil, :attributes! => 
+                { "ec:InclusiveNamespaces/" => 
+                  { "PrefixList" => @inclusive_namespaces.join(' '), 'xmlns:ec' => 'http://www.w3.org/2001/10/xml-exc-c14n#'}
+                }
+              },
+            "ds:SignatureMethod/" => nil,
+            "ds:Reference" => [
               #signed_info_transforms.merge(signed_info_digest_method).merge({ "DigestValue" => timestamp_digest }),
               signed_info_transforms.merge(signed_info_digest_method).merge({ "DigestValue" => body_digest }),
             ],
             :attributes! => {
-              "CanonicalizationMethod/" => { "Algorithm" => ExclusiveXMLCanonicalizationAlgorithm },
-              "SignatureMethod/" => { "Algorithm" => RSASHA1SignatureAlgorithm },
-              "Reference" => { "URI" => ["##{body_id}"] },
+              "ds:CanonicalizationMethod" => { "Algorithm" => ExclusiveXMLCanonicalizationAlgorithm },
+              "ds:SignatureMethod/" => { "Algorithm" => RSASHA1SignatureAlgorithm },
+              "ds:Reference" => { "URI" => ["##{body_id}"] },
             },
-            :order! => [ "CanonicalizationMethod/", "SignatureMethod/", "Reference" ],
+            :order! => [ "ds:CanonicalizationMethod", "ds:SignatureMethod/", "ds:Reference" ],
           },
         }
       end
@@ -141,22 +160,25 @@ module Akami
       def the_signature
         raise MissingCertificate, "Expected a private_key for signing" unless certs.private_key
         signed_info = at_xpath(@document, "//Envelope/Header/Security/Signature/SignedInfo")
+        #signed_info = signed_info ? (@inclusive_namespaces.nil? ? canonicalize(signed_info) : canonicalize(signed_info, @inclusive_namespaces)) : ""
         signed_info = signed_info ? canonicalize(signed_info) : ""
         signature = certs.private_key.sign(OpenSSL::Digest::SHA1.new, signed_info)
         Base64.encode64(signature).gsub("\n", '') # TODO: DRY calls to Base64.encode64(...).gsub("\n", '')
       end
 
       def body_digest
-        body = canonicalize(at_xpath(@document, "//Envelope/Body"))
+        #body = (@inclusive_namespaces.nil? ? canonicalize(at_xpath(@document, "//Envelope/Body")) : canonicalize(at_xpath(@document, "//Envelope/Body"), @inclusive_namespaces))
+        body = canonicalize(at_xpath(@document, "//Envelope/Body")) 
         Base64.encode64(OpenSSL::Digest::SHA1.digest(body)).strip
       end
 
       def signed_info_digest_method
-        { "DigestMethod/" => nil, :attributes! => { "DigestMethod/" => { "Algorithm" => SHA1DigestAlgorithm } } }
+        { "ds:DigestMethod/" => nil, :attributes! => { "ds:DigestMethod/" => { "Algorithm" => SHA1DigestAlgorithm } } }
       end
 
       def signed_info_transforms
-        { "Transforms" => { "Transform/" => nil, :attributes! => { "Transform/" => { "Algorithm" => ExclusiveXMLCanonicalizationAlgorithm } } } }
+        { "ds:Transforms" => { "ds:Transform" => { "ec:InclusiveNamespaces/" => nil, :attributes! => { "ec:InclusiveNamespaces/" => { "PrefixList" => @xform_inclusive_namespaces.join(' '), 'xmlns:ec' => 'http://www.w3.org/2001/10/xml-exc-c14n#'} }},
+        :attributes! => { "ds:Transform" => { "Algorithm" => ExclusiveXMLCanonicalizationAlgorithm } } } }
       end
 
       def uid
